@@ -170,11 +170,10 @@ using { /Verse.org/Simulation }
 
 # API Base call
 
-creative_device_output<public> := class():
+trigger_output_system<public> := class<abstract>():
 
     Main():void=
         {}
-
 """
     out_parts.append(header)
 
@@ -237,7 +236,7 @@ creative_device_output<public> := class():
 {enum_name} := enum:
 {enum_lines}
 
-{class_name} := class(creative_device_output):
+{class_name} := class(trigger_output_system):
 
     @editable
     Target : {name} = {name}{{}}
