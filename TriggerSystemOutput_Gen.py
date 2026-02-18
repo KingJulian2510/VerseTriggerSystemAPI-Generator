@@ -4,7 +4,7 @@ import sys
 import os
 
 BLACKLIST_FILE = "blacklist.txt"
-API_FILE = "api.txt"
+API_FILE = "Fortnite.digest.verse"
 
 
 def snake_to_pascal(s: str) -> str:
@@ -146,15 +146,12 @@ def resolve_methods(class_name, classes, visited=None):
 
     parent = current["parent"]
 
-    # Erst Parent-Methoden holen
     if parent in classes:
         parent_methods = resolve_methods(parent, classes, visited)
         all_methods.extend(parent_methods)
 
-    # Dann eigene Methoden anhängen
     all_methods.extend(current["methods"])
 
-    # Duplikate entfernen (Reihenfolge beibehalten)
     seen = set()
     unique = []
     for m in all_methods:
@@ -202,7 +199,6 @@ creative_device_output<public> := class():
         if not methods:
             continue
 
-        # Duplikate erneut entfernen, Reihenfolge sicherstellen
         seen = set()
         methods_unique = []
         for mm in methods:
