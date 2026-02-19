@@ -78,6 +78,7 @@ def extract_classes(input_text):
             re.M
         )
 
+
         methods = []
         for mo in method_pattern.finditer(body):
             mname = mo.group(1)
@@ -97,15 +98,38 @@ def extract_classes(input_text):
                 continue
 
             # Require return type to be 'void' (allow optional whitespace and qualifiers)
-            # Some signatures may include generics or attributes after the return type; check start
             if not rettype.lower().startswith('void'):
                 continue
 
             methods.append(mname)
 
+        # collect events (zero-arg listenable entries)
+        # Use a scanner to handle nested parentheses inside listenable(...)
+        events = []
+        scan_pattern = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_]*)(?:<[^>]*>)?\s*:[^\n]*?listenable\(', re.M | re.I)
+        for sm in scan_pattern.finditer(body):
+            ename = sm.group(1)
+            # find matching closing parenthesis starting at sm.end()
+            start_idx = sm.end()
+            i = start_idx
+            depth = 1
+            while i < len(body) and depth > 0:
+                ch = body[i]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                i += 1
+            params = body[start_idx:i-1].strip() if i-1 >= start_idx else ''
+            # Only allow exact listenable(tuple())
+            pl = params.replace(' ','').lower()
+            if pl == 'tuple()':
+                events.append(ename)
+
         classes[name] = {
             "parent": parent.strip(),
-            "methods": methods
+            "methods": methods,
+            "events": events
         }
 
     return classes
@@ -161,19 +185,57 @@ def resolve_methods(class_name, classes, visited=None):
     return unique
 
 
+def resolve_events(class_name, classes, visited=None):
+    """
+    Recursively collect events (listenable tuple() entries) from parent classes and current class
+    """
+    if visited is None:
+        visited = set()
+
+    if class_name in visited:
+        return []
+
+    visited.add(class_name)
+
+    current = classes.get(class_name)
+    if not current:
+        return []
+
+    all_events = []
+
+    parent = current.get("parent")
+
+    if parent in classes:
+        parent_events = resolve_events(parent, classes, visited)
+        all_events.extend(parent_events)
+
+    all_events.extend(current.get("events", []))
+
+    seen = set()
+    unique = []
+    for e in all_events:
+        if e not in seen:
+            seen.add(e)
+            unique.append(e)
+
+    return unique
+
+
 def generate_wrapper(classes, blacklist, build_id=None):
     out_parts = []
 
     header = """using { /Fortnite.com/Devices }
-using { /Fortnite.com/Devices/Patchwork }
 using { /Verse.org/Simulation }
 
-# API Base call
+# API Main Functions
 
-trigger_output_system<public> := class():
+input_api_wrapper() := class():
+    OutputFunc : tuple() -> void
+    InputFunc():void = OutputFunc()
 
-    Trigger():void=
-        {}
+trigger_input_system := class:
+
+    Subscribe<public>(OutputFunc : tuple() -> void):void = {}
 """
     out_parts.append(header)
 
@@ -192,43 +254,40 @@ trigger_output_system<public> := class():
             print(f"Skipping blacklisted device: {name}")
             continue
 
-        methods = resolve_methods(name, classes)
+        events = resolve_events(name, classes)
 
-        if not methods:
+        if not events:
             continue
 
         seen = set()
-        methods_unique = []
-        for mm in methods:
-            if mm not in seen:
-                seen.add(mm)
-                methods_unique.append(mm)
+        events_unique = []
+        for ev in events:
+            if ev not in seen:
+                seen.add(ev)
+                events_unique.append(ev)
 
         pascal = snake_to_pascal(name)
-        enum_name = f"{pascal}_Options"
-        class_name = pascal
-        default = methods_unique[0]
+        enum_name = f"{pascal}_InputOptions"
+        listener_name = f"{pascal}_Listener"
+        default = events_unique[0]
 
         # Enum
         enum_entries = []
-        for i, method in enumerate(methods_unique):
-            if i == len(methods_unique) - 1:
-                enum_entries.append(f"    {method}")
+        for i, ev in enumerate(events_unique):
+            if i == len(events_unique) - 1:
+                enum_entries.append(f"    {ev}")
             else:
-                enum_entries.append(f"    {method},")
+                enum_entries.append(f"    {ev},")
         enum_lines = "\n".join(enum_entries)
 
         # Case
         case_entries = []
-        for i, method in enumerate(methods_unique):
-            if i == len(methods_unique) - 1:
-                case_entries.append(
-                    f"            {enum_name}.{method} => Target.{method}()"
-                )
-            else:
-                case_entries.append(
-                    f"            {enum_name}.{method} => Target.{method}(),"
-                )
+        for i, ev in enumerate(events_unique):
+            # Subscribe call for zero-arg events
+            subscribe_block = (
+                f"            {enum_name}.{ev} => Target.{ev}.Subscribe(Wrapper.InputFunc)"
+            )
+            case_entries.append(subscribe_block)
         case_lines = "\n".join(case_entries)
 
         wrapper = f"""# {name}
@@ -236,7 +295,7 @@ trigger_output_system<public> := class():
 {enum_name} := enum:
 {enum_lines}
 
-{class_name} := class(trigger_output_system):
+{listener_name} := class(trigger_input_system):
 
     @editable
     Target : {name} = {name}{{}}
@@ -244,7 +303,8 @@ trigger_output_system<public> := class():
     @editable
     Interaction : {enum_name} = {enum_name}.{default}
 
-    Trigger<override>():void=
+    Subscribe<override>(OutputFunc : tuple() -> void):void =
+        Wrapper := input_api_wrapper() {{OutputFunc := OutputFunc}}
         case(Interaction):
 {case_lines}
 
@@ -313,7 +373,7 @@ if __name__ == "__main__":
     device_classes = {k: v for k, v in classes.items() if k in devices}
     result = generate_wrapper(device_classes, blacklist, build_id=build_id)
 
-    output_file = "OutputTriggerAPI.verse"
+    output_file = "InputTriggerAPI.verse"
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(result)
 

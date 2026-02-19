@@ -1,1 +1,2 @@
-OutputTriggerAPI.verse
+*.verse
+!Fortnite.digest.verse
